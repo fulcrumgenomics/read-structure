@@ -3,7 +3,7 @@
 //!
 //! Each read structure is made up of one or more read segments which are in turn a segment type.
 //!
-//! For mor details see [here](https://github.com/fulcrumgenomics/fgbio/wiki/Read-Structures)
+//! For more details see [here](https://github.com/fulcrumgenomics/fgbio/wiki/Read-Structures)
 //!
 //! # Example
 //!
