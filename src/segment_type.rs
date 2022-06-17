@@ -77,7 +77,7 @@ mod test {
 
     #[test]
     fn test_segment_type_round_trip() -> Result<(), ReadStructureError> {
-        assert_eq!(SegmentType::iter().len(), 4);
+        assert_eq!(SegmentType::iter().len(), 5);
         for tpe in SegmentType::iter() {
             assert_eq!(SegmentType::try_from(tpe.value())?, tpe);
         }
