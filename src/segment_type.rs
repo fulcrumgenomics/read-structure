@@ -13,6 +13,7 @@ use crate::ReadStructureError;
 /// The `SegmentType` type. See [the module level documentation](self) for more.
 #[non_exhaustive]
 #[derive(Debug, Copy, Clone, EnumIter, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[repr(u8)]
 pub enum SegmentType {
     /// Template: the bases in the segment are reads of template (e.g. genomic dna, rna, etc.)

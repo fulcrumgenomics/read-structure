@@ -1,23 +1,23 @@
 [package]
-name = "read-structure"
-version = "0.1.1-alpha.0"
-edition = "2021"
-authors = [
-    "Nils Homer <nils@fulcrumgenomics.com>",
-    "Seth Stadick <seth@fulcrumgenomics.com>"
-]
-license = "MIT"
-readme = "README.md"
-documentation = "https://docs.rs/read-structure"
-homepage = "https://github.com/fulcrumgenomics/read-structure"
-repository = "https://github.com/fulcrumgenomics/read-structure"
-description = "Library for parsing and working with read structure descriptions"
-keywords = ["bioinformatics", "genomic"]
+authors = ["Nils Homer <nils@fulcrumgenomics.com>", "Seth Stadick <seth@fulcrumgenomics.com>"]
 categories = ["science"]
-
+description = "Library for parsing and working with read structure descriptions"
+documentation = "https://docs.rs/read-structure"
+edition = "2021"
+homepage = "https://github.com/fulcrumgenomics/read-structure"
+keywords = ["bioinformatics", "genomic"]
+license = "MIT"
+name = "read-structure"
+readme = "README.md"
+repository = "https://github.com/fulcrumgenomics/read-structure"
+version = "0.1.1-alpha.0"
 
 [dependencies]
 bstr = "0.2.17"
+serde = { version = "1.0.163", features = ["derive"], optional = true } 
 strum = "0.24"
 strum_macros = "0.24"
 thiserror = "1.0.30"
+
+[dev-dependencies]
+serde_json = "1.0.96"

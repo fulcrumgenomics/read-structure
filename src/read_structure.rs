@@ -17,7 +17,8 @@ use std::string;
 use std::string::ToString;
 
 /// The read structure composed of one or more [`ReadSegment`]s.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReadStructure {
     /// The elements that make up the [`ReadStructure`].
     elements: Vec<ReadSegment>,
@@ -370,5 +371,14 @@ mod test {
         test_read_structure_index_10: ("10T10B10B10S10M", 2, "10B", 20),
         test_read_structure_index_11: ("10T10B10B10S10M", 3, "10S", 30),
         test_read_structure_index_12: ("10T10B10B10S10M", 4, "10M", 40),
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_serde() {
+        let rs = ReadStructure::from_str("10T10B10B10S10M").unwrap();
+        let rs_json = serde_json::to_string(&rs).unwrap();
+        let rs2 = serde_json::from_str(&rs_json).unwrap();
+        assert_eq!(rs, rs2);
     }
 }
