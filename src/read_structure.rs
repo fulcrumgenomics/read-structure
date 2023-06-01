@@ -132,6 +132,11 @@ impl ReadStructure {
         self.segments_by_type(SegmentType::Skip)
     }
 
+    /// Returns the cellular barcode [`ReadSegment`]s in this read structure
+    pub fn cellular_barcodes(&self) -> impl Iterator<Item = &ReadSegment> {
+        self.segments_by_type(SegmentType::CellularBarcode)
+    }
+
     /// Returns the first [`ReadSegment`] in this read structure
     pub fn first(&self) -> Option<&ReadSegment> {
         self.elements.first()
@@ -244,7 +249,7 @@ mod test {
 
     #[test]
     fn test_read_structure_from_str() {
-        let rss = ["1T", "1B", "1M", "1S", "101T", "5B101T", "123456789T", "10T10B10B10S10M"];
+        let rss = ["1T", "1B", "1M", "1S", "101T", "5B101T", "123456789T", "10T10B10B10S10M", "5B2C3T"];
         for rs in &rss {
             assert_eq!(ReadStructure::from_str(rs).unwrap().to_string(), *rs);
         }
@@ -306,7 +311,7 @@ mod test {
 
     #[test]
     fn test_read_structure_collect_segments() {
-        let rs = ReadStructure::from_str("10M9T8B7S10M9T8B7S").unwrap();
+        let rs = ReadStructure::from_str("10M9T8B7S103CM9T8B7S2C").unwrap();
         let templates: String = rs.templates().map(|s| s.to_string()).collect();
         assert_eq!(templates, "9T9T");
         let sample_barcodes: String = rs.sample_barcodes().map(|s| s.to_string()).collect();
@@ -315,6 +320,8 @@ mod test {
         assert_eq!(molecular_barcodes, "10M10M");
         let skips: String = rs.skips().map(|s| s.to_string()).collect();
         assert_eq!(skips, "7S7S");
+        let cellular_barcodes: String = rs.cellular_barcodes().map(|s| s.to_string()).collect();
+        assert_eq!(cellular_barcodes, "3C2C");
     }
 
     macro_rules! test_read_structure_length {
@@ -370,5 +377,6 @@ mod test {
         test_read_structure_index_10: ("10T10B10B10S10M", 2, "10B", 20),
         test_read_structure_index_11: ("10T10B10B10S10M", 3, "10S", 30),
         test_read_structure_index_12: ("10T10B10B10S10M", 4, "10M", 40),
+        test_read_structure_index_32: ("10T10B10B10S10C10M", 4, "10C", 40),
     }
 }
