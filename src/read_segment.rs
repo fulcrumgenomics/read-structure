@@ -21,6 +21,7 @@ pub const ANY_LENGTH_STR: &str = "+";
 /// The read segment describing a given kind ([`SegmentType`]), optional length, and offset of the
 /// bases within a [`crate::read_structure::ReadStructure`].
 #[derive(Debug, Copy, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReadSegment {
     /// The offset in the read if the segment belongs to a read structure
     pub(crate) offset: usize,
