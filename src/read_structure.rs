@@ -311,7 +311,7 @@ mod test {
 
     #[test]
     fn test_read_structure_collect_segments() {
-        let rs = ReadStructure::from_str("10M9T8B7S103CM9T8B7S2C").unwrap();
+        let rs = ReadStructure::from_str("10M9T8B7S3C10M9T8B7S2C").unwrap();
         let templates: String = rs.templates().map(|s| s.to_string()).collect();
         assert_eq!(templates, "9T9T");
         let sample_barcodes: String = rs.sample_barcodes().map(|s| s.to_string()).collect();
