@@ -249,7 +249,8 @@ mod test {
 
     #[test]
     fn test_read_structure_from_str() {
-        let rss = ["1T", "1B", "1M", "1S", "101T", "5B101T", "123456789T", "10T10B10B10S10M", "5B2C3T"];
+        let rss = 
+            ["1T", "1B", "1M", "1S", "101T", "5B101T", "123456789T", "10T10B10B10S10M", "5B2C3T"];
         for rs in &rss {
             assert_eq!(ReadStructure::from_str(rs).unwrap().to_string(), *rs);
         }
