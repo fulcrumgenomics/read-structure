@@ -96,7 +96,7 @@ pub enum ReadStructureError {
     #[error("ReadSegment must have length > 0 or `+`: {}[{}]{}", .0.prefix, .0.error, .0.suffix)]
     ReadSegmentLengthZero(ErrorMessageParts),
 
-    #[error("Invalid SegementType: {0}")]
+    #[error("Invalid SegmentType: {0}")]
     ReadSegmentTypeInvalid(char),
 }
 
