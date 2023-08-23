@@ -79,7 +79,7 @@ impl FromStr for SegmentType {
     /// - If `SegmentType` not valid
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         if value.len() == 1 {
-            Self::try_from(value.chars().nth(0).unwrap())
+            Self::try_from(value.chars().next().unwrap())
         } else {
             Err(ReadStructureError::ReadSegmentTypeStringInvalid(value.to_owned()))
         }
