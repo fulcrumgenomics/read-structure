@@ -81,7 +81,7 @@ impl FromStr for SegmentType {
         if value.len() == 1 {
             Self::try_from(value.chars().nth(0).unwrap())
         } else {
-            Err(ReadStructureError::ReadSegmentMultipleSegments(value.to_owned()))
+            Err(ReadStructureError::ReadSegmentTypeStringInvalid(value.to_owned()))
         }
     }
 }
@@ -117,5 +117,13 @@ mod test {
             assert_eq!(SegmentType::from_str(s)?, SegmentType::try_from(*c)?);
         }
         Ok(())
+    }
+
+    #[test]
+    fn test_invalid_segment_type_string() {
+        assert!(SegmentType::from_str("").is_err());
+        assert!(SegmentType::from_str("GG").is_err());
+        assert!(SegmentType::from_str("TG").is_err());
+        assert!(!SegmentType::from_str("T").is_err());
     }
 }

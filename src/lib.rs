@@ -98,6 +98,9 @@ pub enum ReadStructureError {
 
     #[error("Invalid SegmentType: {0}")]
     ReadSegmentTypeInvalid(char),
+
+    #[error("Invalid SegmentType: {0}")]
+    ReadSegmentTypeStringInvalid(String),
 }
 
 /// Helper struct for isolating the erroneous portion of a string.
