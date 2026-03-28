@@ -195,10 +195,10 @@ impl std::str::FromStr for ReadStructure {
             let length = if chars[i] as u8 == ANY_LENGTH_BYTE {
                 i += 1;
                 None
-            } else if chars[i].is_digit(10) {
+            } else if chars[i].is_ascii_digit() {
                 let mut len: usize = 0;
-                while i < chars.len() && chars[i].is_digit(10) {
-                    // Unwrap is save since we've checked `is_digit` already
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    // Unwrap is safe since we've checked `is_ascii_digit` already
                     let digit = chars[i].to_digit(10).unwrap() as usize;
                     len = (len * 10) + digit;
                     i += 1;

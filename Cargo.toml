@@ -13,11 +13,11 @@ repository = "https://github.com/fulcrumgenomics/read-structure"
 version = "0.2.1-rc.1"
 
 [dependencies]
-bstr = "0.2.17"
-serde = { version = "1.0.163", features = ["derive"], optional = true } 
-strum = "0.24"
-strum_macros = "0.24"
-thiserror = "1.0.30"
+bstr = "1.12"
+serde = { version = "1.0", features = ["derive"], optional = true }
+strum = "0.26"
+strum_macros = "0.26"
+thiserror = "1.0"
 
 [dev-dependencies]
-serde_json = "1.0.96"
+serde_json = "1.0"
