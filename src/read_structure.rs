@@ -5,12 +5,12 @@
 //! stretch of bases of the same type (e.g. template bases) of some length and
 //! some offset from the start of the read.
 
-use crate::read_segment;
-use crate::read_segment::ReadSegment;
-use crate::read_segment::ANY_LENGTH_BYTE;
-use crate::segment_type::SegmentType;
 use crate::ErrorMessageParts;
 use crate::ReadStructureError;
+use crate::read_segment;
+use crate::read_segment::ANY_LENGTH_BYTE;
+use crate::read_segment::ReadSegment;
+use crate::segment_type::SegmentType;
 use std::convert::TryFrom;
 use std::ops::Index;
 use std::string;
@@ -79,11 +79,7 @@ impl ReadStructure {
 
     /// Returns the fixed length if there is one.
     pub fn fixed_length(&self) -> Option<usize> {
-        if self.has_fixed_length() {
-            Some(self.length_of_fixed_segments)
-        } else {
-            None
-        }
+        if self.has_fixed_length() { Some(self.length_of_fixed_segments) } else { None }
     }
 
     /// Returns the number of segments in this read structure.
@@ -265,7 +261,7 @@ mod test {
     }
 
     macro_rules! test_read_structure_from_str_err {
-        ($($name:ident: $value:expr,)*) => {
+        ($($name:ident: $value:expr_2021,)*) => {
         $(
             #[test]
             fn $name() {
@@ -284,7 +280,7 @@ mod test {
     }
 
     macro_rules! test_read_structure_from_str_invalid {
-        ($($name:ident: $value:expr,)*) => {
+        ($($name:ident: $value:expr_2021,)*) => {
         $(
             #[test]
             fn $name() {
@@ -320,7 +316,7 @@ mod test {
     }
 
     macro_rules! test_read_structure_length {
-        ($($name:ident: $value:expr,)*) => {
+        ($($name:ident: $value:expr_2021,)*) => {
         $(
             #[test]
             fn $name() {
@@ -344,7 +340,7 @@ mod test {
     }
 
     macro_rules! test_read_structure_index {
-        ($($name:ident: $value:expr,)*) => {
+        ($($name:ident: $value:expr_2021,)*) => {
         $(
             #[test]
             fn $name() {

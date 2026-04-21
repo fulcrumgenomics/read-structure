@@ -7,7 +7,7 @@
 
 use std::{convert::TryFrom, io::Read};
 
-use crate::{segment_type::SegmentType, ReadStructure, ReadStructureError};
+use crate::{ReadStructure, ReadStructureError, segment_type::SegmentType};
 
 /// A character that can be put in place of a number in a read structure to mean "1 or more bases".
 pub const ANY_LENGTH_BYTE: u8 = b'+';
