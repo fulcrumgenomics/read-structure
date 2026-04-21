@@ -90,6 +90,18 @@ pub enum ReadStructureError {
     #[error("ReadSegment too short: {0}")]
     ReadSegmentTooShort(String),
 
+    /// Returned when attempting to extract bases for a segment whose bases cannot be
+    /// determined from the read sequence alone. Only produced when the
+    /// `non-terminal-plus` feature is enabled and the indefinite-length (`+`) segment
+    /// appears in a non-terminal position: that segment and every segment after it
+    /// cannot be extracted without knowing the read length at extract time, which is
+    /// intentionally not supported.
+    #[cfg(feature = "non-terminal-plus")]
+    #[error(
+        "Segment bases cannot be extracted; the indefinite-length segment is not the last segment: {0}"
+    )]
+    SegmentNotExtractable(ReadSegment),
+
     #[error("ReadSegment str contained more than one segment: {0}")]
     ReadSegmentMultipleSegments(String),
 

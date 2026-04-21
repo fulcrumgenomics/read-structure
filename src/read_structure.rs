@@ -29,10 +29,20 @@ pub struct ReadStructure {
 impl ReadStructure {
     /// Builds a new [`ReadStructure`] from a vector of [`ReadSegment`]s.
     ///
+    /// At most one segment may have an indefinite length. By default that segment must
+    /// be the last one. When the `non-terminal-plus` feature is enabled, the
+    /// indefinite-length segment is also permitted in a non-terminal position; in that
+    /// case the indefinite segment and every segment following it will have their
+    /// `extractable` flag set to `false`, and calling [`ReadSegment::extract_bases`] or
+    /// [`ReadSegment::extract_bases_and_quals`] on them returns
+    /// [`ReadStructureError::SegmentNotExtractable`].
+    ///
     /// # Errors
     ///
-    /// Returns `Err` if the any segment but the last has an indefinite length, or no elements
-    /// exist.
+    /// - Returns `Err` if no elements exist.
+    /// - Returns `Err` if more than one segment has an indefinite length.
+    /// - Without the `non-terminal-plus` feature, returns `Err` if the single
+    ///   indefinite-length segment is not the last segment.
     #[allow(clippy::missing_panics_doc)]
     pub fn new(mut segments: Vec<ReadSegment>) -> Result<Self, ReadStructureError> {
         if segments.is_empty() {
@@ -41,26 +51,33 @@ impl ReadStructure {
 
         let mut num_indefinite = 0;
         let mut length_of_fixed_segments = 0;
-        for s in &segments {
+        let mut indefinite_index: Option<usize> = None;
+        for (i, s) in segments.iter().enumerate() {
             if let Some(len) = s.length {
                 length_of_fixed_segments += len;
             } else {
                 num_indefinite += 1;
+                if indefinite_index.is_none() {
+                    indefinite_index = Some(i);
+                }
             }
         }
 
-        if segments.last().unwrap().has_length() {
-            if num_indefinite != 0 {
-                return Err(
-                    ReadStructureError::ReadStructureNonTerminalIndefiniteLengthReadSegment(
-                        *segments.iter().find(|s| !s.has_length()).unwrap(),
-                    ),
-                );
-            }
-        } else if num_indefinite > 1 {
+        if num_indefinite > 1 {
             return Err(ReadStructureError::ReadStructureNonTerminalIndefiniteLengthReadSegment(
                 *segments.iter().find(|s| !s.has_length()).unwrap(),
             ));
+        }
+
+        #[cfg(not(feature = "non-terminal-plus"))]
+        if let Some(idx) = indefinite_index {
+            if idx != segments.len() - 1 {
+                return Err(
+                    ReadStructureError::ReadStructureNonTerminalIndefiniteLengthReadSegment(
+                        segments[idx],
+                    ),
+                );
+            }
         }
 
         let mut off: usize = 0;
@@ -68,13 +85,23 @@ impl ReadStructure {
             segment.offset = off;
             off += segment.length.unwrap_or(0);
         }
+
+        #[cfg(feature = "non-terminal-plus")]
+        if let Some(idx) = indefinite_index {
+            if idx != segments.len() - 1 {
+                for segment in &mut segments[idx..] {
+                    segment.extractable = false;
+                }
+            }
+        }
+
         Ok(ReadStructure { elements: segments, length_of_fixed_segments })
     }
 
     /// Returns `true` if the [`ReadStructure`] has a fixed (i.e. non-variable) length,
-    /// `false` if there are segments but no fixed length.
+    /// `false` if any segment has an indefinite length.
     pub fn has_fixed_length(&self) -> bool {
-        self.elements.last().unwrap().has_length()
+        self.elements.iter().all(ReadSegment::has_length)
     }
 
     /// Returns the fixed length if there is one.
@@ -211,7 +238,13 @@ impl std::str::FromStr for ReadStructure {
                     )));
                 }
                 i += 1;
-                segs.push(ReadSegment { offset, length, kind });
+                segs.push(ReadSegment {
+                    offset,
+                    length,
+                    kind,
+                    #[cfg(feature = "non-terminal-plus")]
+                    extractable: true,
+                });
                 offset += length.unwrap_or(0);
             } else {
                 return Err(ReadStructureError::ReadStructureHadUnknownType(
@@ -276,7 +309,14 @@ mod test {
         test_read_structure_allow_any_char_only_once_and_for_last_segment_panic_1: "5M++T",
         test_read_structure_allow_any_char_only_once_and_for_last_segment_panic_2: "5M70+T",
         test_read_structure_allow_any_char_only_once_and_for_last_segment_panic_3: "+M+T",
-        test_read_structure_allow_any_char_only_once_and_for_last_segment_panic_4: "+M70T",
+    }
+
+    // With the `non-terminal-plus` feature enabled, this is a legal read structure.
+    // Tested for acceptance in the feature-gated test module below.
+    #[test]
+    #[cfg(not(feature = "non-terminal-plus"))]
+    fn test_read_structure_strict_rejects_non_terminal_plus() {
+        assert!(ReadStructure::from_str("+M70T").is_err());
     }
 
     macro_rules! test_read_structure_from_str_invalid {
@@ -378,5 +418,112 @@ mod test {
         let rs_json = serde_json::to_string(&rs).unwrap();
         let rs2 = serde_json::from_str(&rs_json).unwrap();
         assert_eq!(rs, rs2);
+    }
+
+    // ---- tests covering the `non-terminal-plus` feature ----
+
+    #[cfg(feature = "non-terminal-plus")]
+    mod non_terminal_plus {
+        use crate::ReadStructureError;
+        use crate::read_structure::ReadStructure;
+        use std::str::FromStr;
+
+        #[test]
+        fn test_accepts_middle_plus() {
+            let rs = ReadStructure::from_str("8B+M10T").unwrap();
+            assert_eq!(rs.to_string(), "8B+M10T");
+            assert_eq!(rs.number_of_segments(), 3);
+        }
+
+        #[test]
+        fn test_accepts_leading_plus() {
+            let rs = ReadStructure::from_str("+B10T").unwrap();
+            assert_eq!(rs.to_string(), "+B10T");
+            assert_eq!(rs.number_of_segments(), 2);
+        }
+
+        #[test]
+        fn test_accepts_trailing_plus() {
+            // Trailing `+` is still legal (it was before and it is now).
+            let rs = ReadStructure::from_str("10T+M").unwrap();
+            assert_eq!(rs.to_string(), "10T+M");
+        }
+
+        #[test]
+        fn test_accepts_middle_plus_between_fixed_runs() {
+            let rs = ReadStructure::from_str("10T8B+M10T").unwrap();
+            assert_eq!(rs.to_string(), "10T8B+M10T");
+            assert_eq!(rs.number_of_segments(), 4);
+        }
+
+        #[test]
+        fn test_rejects_two_consecutive_plus() {
+            assert!(ReadStructure::from_str("++M").is_err());
+        }
+
+        #[test]
+        fn test_rejects_two_separate_plus() {
+            assert!(ReadStructure::from_str("+M+T").is_err());
+        }
+
+        #[test]
+        fn test_rejects_two_plus_in_longer_structure() {
+            assert!(ReadStructure::from_str("5M+T+B").is_err());
+        }
+
+        #[test]
+        fn test_pre_plus_segments_still_extract() {
+            let rs = ReadStructure::from_str("8B+M10T").unwrap();
+            let read = b"BBBBBBBBUUUUUUUUUUUUTTTTTTTTTT";
+            assert_eq!(rs.segments()[0].extract_bases(read).unwrap(), b"BBBBBBBB");
+        }
+
+        #[test]
+        fn test_middle_plus_segment_not_extractable() {
+            let rs = ReadStructure::from_str("8B+M10T").unwrap();
+            let read = b"BBBBBBBBUUUUUUUUUUUUTTTTTTTTTT";
+            let err = rs.segments()[1].extract_bases(read).unwrap_err();
+            assert!(matches!(err, ReadStructureError::SegmentNotExtractable(_)));
+        }
+
+        #[test]
+        fn test_post_plus_segment_not_extractable() {
+            let rs = ReadStructure::from_str("8B+M10T").unwrap();
+            let read = b"BBBBBBBBUUUUUUUUUUUUTTTTTTTTTT";
+            let err = rs.segments()[2].extract_bases(read).unwrap_err();
+            assert!(matches!(err, ReadStructureError::SegmentNotExtractable(_)));
+        }
+
+        #[test]
+        fn test_extract_bases_and_quals_errors_on_post_plus() {
+            let rs = ReadStructure::from_str("8B+M10T").unwrap();
+            let bases = b"BBBBBBBBUUUUUUUUUUUUTTTTTTTTTT";
+            let quals = b"##########################????";
+            let err = rs.segments()[2].extract_bases_and_quals(bases, quals).unwrap_err();
+            assert!(matches!(err, ReadStructureError::SegmentNotExtractable(_)));
+        }
+
+        #[test]
+        fn test_trailing_plus_still_extractable() {
+            // Terminal `+` must remain extractable under the feature.
+            let rs = ReadStructure::from_str("10T+M").unwrap();
+            let read = b"AAAAAAAAAAGGGGGGGGGG";
+            assert_eq!(rs.segments()[1].extract_bases(read).unwrap(), b"GGGGGGGGGG");
+        }
+
+        #[test]
+        fn test_has_fixed_length_middle_plus() {
+            assert!(!ReadStructure::from_str("8B+M10T").unwrap().has_fixed_length());
+        }
+
+        #[test]
+        fn test_has_fixed_length_no_plus() {
+            assert!(ReadStructure::from_str("10T10B").unwrap().has_fixed_length());
+        }
+
+        #[test]
+        fn test_fixed_length_none_for_middle_plus() {
+            assert!(ReadStructure::from_str("8B+M10T").unwrap().fixed_length().is_none());
+        }
     }
 }
