@@ -21,25 +21,23 @@
 //! Extracting segments from an actual read based on the read structure:
 //!
 //! ```rust
-//! use std::convert::TryFrom;
 //! use std::str::FromStr;
-//! use read_structure::{
-//!     ReadStructure,
-//!     SegmentType,
-//! };
-//! let read_sequence = b"\
-//!     AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGGGGGGGGCCCCCCCCTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
-//! .to_vec();
-//! let kind_of_interest = SegmentType::Template;
+//! use read_structure::{ReadStructure, SegmentType};
+//!
+//! let bases = b"\
+//!     AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGGGGGGGGCCCCCCCCTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT";
+//! let quals = &[b'I'; 168][..];
 //! let rs = ReadStructure::from_str("76T8B8B76T").unwrap();
 //!
-//! let mut sections = vec![];
-//! for segment in rs.segments_by_type(kind_of_interest) {
-//!     sections.push(segment.extract_bases(read_sequence.as_slice()).unwrap())
-//! }
-//! assert_eq!(sections, vec![
-//!     b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-//!     b"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+//! let templates: Vec<&[u8]> = rs.extract(bases, quals, /* include_skips */ true)
+//!     .unwrap()
+//!     .filter(|(seg, _, _)| seg.kind == SegmentType::Template)
+//!     .map(|(_, bases, _)| bases)
+//!     .collect();
+//!
+//! assert_eq!(templates, vec![
+//!     &b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"[..],
+//!     &b"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"[..],
 //! ]);
 //! ```
 
@@ -81,26 +79,14 @@ pub enum ReadStructureError {
     #[error("Read structure contains a non-terminal segment that has an indefinite length: {0}")]
     ReadStructureNonTerminalIndefiniteLengthReadSegment(ReadSegment),
 
-    #[error("Read ends before start of segment: {0}")]
-    ReadEndsBeforeSegment(ReadSegment),
-
-    #[error("Read ends before end of segment: {0}")]
-    ReadEndsAfterSegment(ReadSegment),
+    /// The read is too short to accommodate every fixed-length segment in the read
+    /// structure. `required` is the sum of all fixed segment lengths, plus 1 if the
+    /// structure also has an indefinite (`+`) segment (which must be at least one base).
+    #[error("Read of length {read_len} is shorter than required minimum {required}")]
+    ReadTooShort { read_len: usize, required: usize },
 
     #[error("ReadSegment too short: {0}")]
     ReadSegmentTooShort(String),
-
-    /// Returned when attempting to extract bases for a segment whose bases cannot be
-    /// determined from the read sequence alone. Only produced when the
-    /// `non-terminal-plus` feature is enabled and the indefinite-length (`+`) segment
-    /// appears in a non-terminal position: that segment and every segment after it
-    /// cannot be extracted without knowing the read length at extract time, which is
-    /// intentionally not supported.
-    #[cfg(feature = "non-terminal-plus")]
-    #[error(
-        "Segment bases cannot be extracted; the indefinite-length segment is not the last segment: {0}"
-    )]
-    SegmentNotExtractable(ReadSegment),
 
     #[error("ReadSegment str contained more than one segment: {0}")]
     ReadSegmentMultipleSegments(String),

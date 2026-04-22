@@ -17,16 +17,7 @@ repository = "https://github.com/fulcrumgenomics/read-structure"
 rust-version = "1.85"
 version = "0.3.0"
 
-[features]
-# When enabled, the single indefinite-length (`+`) segment is permitted to appear
-# in any position in a read structure, not just the terminal position. The
-# "at most one `+` per structure" constraint still applies. When `+` is
-# non-terminal, attempting to extract bases for that segment or any segments
-# following it returns `ReadStructureError::SegmentNotExtractable`.
-non-terminal-plus = []
-
 [dependencies]
-bstr = "1.12"
 serde = { version = "1.0", features = ["derive"], optional = true }
 strum = "0.28"
 strum_macros = "0.28"

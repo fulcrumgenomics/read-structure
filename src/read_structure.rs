@@ -2,63 +2,74 @@
 //!
 //! Type [`ReadStructure`] describes the structure of a given read.  A read
 //! contains one or more read segments. A read segment describes a contiguous
-//! stretch of bases of the same type (e.g. template bases) of some length and
-//! some offset from the start of the read.
+//! stretch of bases of the same type (e.g. template bases).
+//!
+//! At most one segment may be the indefinite-length (`+`) segment meaning "the rest
+//! of the read"; it can appear in any position, not just the terminal one.
 
 use crate::ErrorMessageParts;
 use crate::ReadStructureError;
-use crate::read_segment;
 use crate::read_segment::ANY_LENGTH_BYTE;
 use crate::read_segment::ReadSegment;
 use crate::segment_type::SegmentType;
-use std::convert::TryFrom;
 use std::ops::Index;
-use std::string;
-use std::string::ToString;
 
-/// The read structure composed of one or more [`ReadSegment`]s.
+/// A read structure made up of one or more [`ReadSegment`]s.
+///
+/// Internally, in addition to the segments themselves, we cache per-segment start
+/// offsets (signed) and enough summary information to resolve the indefinite-length
+/// (`+`) segment's end position at extract time without another pass over the
+/// segments.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReadStructure {
     /// The elements that make up the [`ReadStructure`].
     elements: Vec<ReadSegment>,
-    /// The combined length of fixed length segments.
+    /// Sum of lengths across all fixed-length (non-`+`) segments.
     length_of_fixed_segments: usize,
+    /// Index of the indefinite-length (`+`) segment, if any.
+    plus_index: Option<usize>,
+    /// Sum of fixed-length-segment lengths strictly AFTER the `+` segment. Zero when
+    /// there is no `+` or when `+` is terminal. Allows the end of the `+` segment to
+    /// be located as `read_len - post_plus_len` at extract time.
+    post_plus_len: usize,
+    /// Per-element start offset.
+    ///
+    /// Sign carries the frame of reference:
+    /// - `>= 0` — offset from the start of the read. Used for segments before or
+    ///   at the `+`, and for every segment when there is no `+`.
+    /// - `<  0` — distance from the end of the read, stored as a negative number.
+    ///   Used for segments strictly after a non-terminal `+`. The actual start
+    ///   position in a read of length `L` is `L + offset` (i.e., `L - (-offset)`).
+    offsets: Vec<isize>,
 }
 
 impl ReadStructure {
     /// Builds a new [`ReadStructure`] from a vector of [`ReadSegment`]s.
     ///
-    /// At most one segment may have an indefinite length. By default that segment must
-    /// be the last one. When the `non-terminal-plus` feature is enabled, the
-    /// indefinite-length segment is also permitted in a non-terminal position; in that
-    /// case the indefinite segment and every segment following it will have their
-    /// `extractable` flag set to `false`, and calling [`ReadSegment::extract_bases`] or
-    /// [`ReadSegment::extract_bases_and_quals`] on them returns
-    /// [`ReadStructureError::SegmentNotExtractable`].
+    /// At most one segment may have an indefinite length (`+`); it may appear in any
+    /// position.
     ///
     /// # Errors
     ///
     /// - Returns `Err` if no elements exist.
     /// - Returns `Err` if more than one segment has an indefinite length.
-    /// - Without the `non-terminal-plus` feature, returns `Err` if the single
-    ///   indefinite-length segment is not the last segment.
     #[allow(clippy::missing_panics_doc)]
-    pub fn new(mut segments: Vec<ReadSegment>) -> Result<Self, ReadStructureError> {
+    pub fn new(segments: Vec<ReadSegment>) -> Result<Self, ReadStructureError> {
         if segments.is_empty() {
             return Err(ReadStructureError::ReadStructureContainsZeroElements);
         }
 
         let mut num_indefinite = 0;
         let mut length_of_fixed_segments = 0;
-        let mut indefinite_index: Option<usize> = None;
+        let mut plus_index: Option<usize> = None;
         for (i, s) in segments.iter().enumerate() {
             if let Some(len) = s.length {
                 length_of_fixed_segments += len;
             } else {
                 num_indefinite += 1;
-                if indefinite_index.is_none() {
-                    indefinite_index = Some(i);
+                if plus_index.is_none() {
+                    plus_index = Some(i);
                 }
             }
         }
@@ -69,39 +80,98 @@ impl ReadStructure {
             ));
         }
 
-        #[cfg(not(feature = "non-terminal-plus"))]
-        if let Some(idx) = indefinite_index {
-            if idx != segments.len() - 1 {
-                return Err(
-                    ReadStructureError::ReadStructureNonTerminalIndefiniteLengthReadSegment(
-                        segments[idx],
-                    ),
-                );
-            }
-        }
+        // Compute per-element offsets. Two-pass: forward for pre-and-at-`+` (and
+        // for every segment when there is no `+`), then backward for segments
+        // strictly after the `+`.
+        let n = segments.len();
+        let mut offsets = vec![0isize; n];
 
+        // Forward pass up to and including the `+` (or the whole vec if no `+`).
+        let forward_end = plus_index.map_or(n, |p| p + 1);
         let mut off: usize = 0;
-        for segment in &mut segments {
-            segment.offset = off;
-            off += segment.length.unwrap_or(0);
+        for (i, seg) in segments.iter().take(forward_end).enumerate() {
+            offsets[i] = off as isize;
+            off += seg.length.unwrap_or(0);
         }
 
-        #[cfg(feature = "non-terminal-plus")]
-        if let Some(idx) = indefinite_index {
-            if idx != segments.len() - 1 {
-                for segment in &mut segments[idx..] {
-                    segment.extractable = false;
-                }
+        // Backward pass for segments strictly after the `+`, if any.
+        let mut post_plus_len: usize = 0;
+        if let Some(p) = plus_index {
+            // `dist_from_end` is the total number of bases from the *start* of the
+            // current segment to the end of the read. We walk from the end back.
+            let mut dist_from_end: usize = 0;
+            for (i, seg) in segments.iter().enumerate().skip(p + 1).rev() {
+                // Fixed length — invariants: non-`+` segments always have a length.
+                let len = seg.length.expect("post-+ segments must be fixed length");
+                dist_from_end += len;
+                offsets[i] = -(dist_from_end as isize);
             }
+            post_plus_len = dist_from_end;
         }
 
-        Ok(ReadStructure { elements: segments, length_of_fixed_segments })
+        Ok(ReadStructure {
+            elements: segments,
+            length_of_fixed_segments,
+            plus_index,
+            post_plus_len,
+            offsets,
+        })
+    }
+
+    /// Extracts the bases and quality scores for every segment in this read structure.
+    ///
+    /// Returns a no-alloc iterator over `(&ReadSegment, &[u8] bases, &[u8] quals)` triples.
+    /// All error conditions are checked up front, so the returned iterator is infallible
+    /// and can be cheaply `.collect()`ed into a `Vec` when an owned collection is needed.
+    ///
+    /// When `include_skips` is `false`, segments of type [`SegmentType::Skip`] are
+    /// omitted from the output.
+    ///
+    /// # Errors
+    ///
+    /// - [`ReadStructureError::MismatchingBasesAndQualsLen`] if `bases.len() != quals.len()`.
+    /// - [`ReadStructureError::ReadTooShort`] if the read cannot accommodate every fixed
+    ///   segment. When the structure also has a `+` segment, the read must be strictly
+    ///   longer than the sum of the fixed-segment lengths (since `+` means at least
+    ///   one base).
+    pub fn extract<'rs, 'b>(
+        &'rs self,
+        bases: &'b [u8],
+        quals: &'b [u8],
+        include_skips: bool,
+    ) -> Result<ExtractedSegments<'rs, 'b>, ReadStructureError> {
+        if bases.len() != quals.len() {
+            return Err(ReadStructureError::MismatchingBasesAndQualsLen {
+                bases_len: bases.len(),
+                quals_len: quals.len(),
+            });
+        }
+
+        let required = if self.plus_index.is_some() {
+            self.length_of_fixed_segments + 1
+        } else {
+            self.length_of_fixed_segments
+        };
+        if bases.len() < required {
+            return Err(ReadStructureError::ReadTooShort { read_len: bases.len(), required });
+        }
+
+        Ok(ExtractedSegments {
+            elements: &self.elements,
+            offsets: &self.offsets,
+            plus_index: self.plus_index,
+            post_plus_len: self.post_plus_len,
+            bases,
+            quals,
+            include_skips,
+            next_index: 0,
+        })
     }
 
     /// Returns `true` if the [`ReadStructure`] has a fixed (i.e. non-variable) length,
     /// `false` if any segment has an indefinite length.
     pub fn has_fixed_length(&self) -> bool {
-        self.elements.iter().all(ReadSegment::has_length)
+        self.plus_index.is_none()
     }
 
     /// Returns the fixed length if there is one.
@@ -119,7 +189,7 @@ impl ReadStructure {
         &self.elements
     }
 
-    /// Returns an iterator over the read segments
+    /// Returns an iterator over the read segments.
     pub fn iter(&self) -> impl Iterator<Item = &ReadSegment> {
         self.elements.iter()
     }
@@ -129,39 +199,86 @@ impl ReadStructure {
         self.elements.iter().filter(move |seg| seg.kind == kind)
     }
 
-    /// Returns the template [`ReadSegment`]s in this read structure
+    /// Returns the template [`ReadSegment`]s in this read structure.
     pub fn templates(&self) -> impl Iterator<Item = &ReadSegment> {
         self.segments_by_type(SegmentType::Template)
     }
 
-    /// Returns the sample barcode [`ReadSegment`]s in this read structure
+    /// Returns the sample barcode [`ReadSegment`]s in this read structure.
     pub fn sample_barcodes(&self) -> impl Iterator<Item = &ReadSegment> {
         self.segments_by_type(SegmentType::SampleBarcode)
     }
 
-    /// Returns the molecular barcode [`ReadSegment`]s in this read structure
+    /// Returns the molecular barcode [`ReadSegment`]s in this read structure.
     pub fn molecular_barcodes(&self) -> impl Iterator<Item = &ReadSegment> {
         self.segments_by_type(SegmentType::MolecularBarcode)
     }
 
-    /// Returns the skip [`ReadSegment`]s in this read structure
+    /// Returns the skip [`ReadSegment`]s in this read structure.
     pub fn skips(&self) -> impl Iterator<Item = &ReadSegment> {
         self.segments_by_type(SegmentType::Skip)
     }
 
-    /// Returns the cellular barcode [`ReadSegment`]s in this read structure
+    /// Returns the cellular barcode [`ReadSegment`]s in this read structure.
     pub fn cellular_barcodes(&self) -> impl Iterator<Item = &ReadSegment> {
         self.segments_by_type(SegmentType::CellularBarcode)
     }
 
-    /// Returns the first [`ReadSegment`] in this read structure
+    /// Returns the first [`ReadSegment`] in this read structure.
     pub fn first(&self) -> Option<&ReadSegment> {
         self.elements.first()
     }
 
-    /// Returns the last [`ReadSegment`] in this read structure
+    /// Returns the last [`ReadSegment`] in this read structure.
     pub fn last(&self) -> Option<&ReadSegment> {
         self.elements.last()
+    }
+}
+
+/// Iterator returned by [`ReadStructure::extract`].
+///
+/// Yields `(&ReadSegment, &[u8] bases, &[u8] quals)` triples — one per segment in
+/// the underlying read structure, in order (with `Skip` segments optionally filtered).
+/// The iterator is infallible: all error checks are performed up front in
+/// [`ReadStructure::extract`].
+#[derive(Debug)]
+pub struct ExtractedSegments<'rs, 'b> {
+    elements: &'rs [ReadSegment],
+    offsets: &'rs [isize],
+    plus_index: Option<usize>,
+    post_plus_len: usize,
+    bases: &'b [u8],
+    quals: &'b [u8],
+    include_skips: bool,
+    next_index: usize,
+}
+
+impl<'rs, 'b> Iterator for ExtractedSegments<'rs, 'b> {
+    type Item = (&'rs ReadSegment, &'b [u8], &'b [u8]);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.next_index < self.elements.len() {
+            let i = self.next_index;
+            self.next_index += 1;
+            let seg = &self.elements[i];
+            if !self.include_skips && seg.kind == SegmentType::Skip {
+                continue;
+            }
+            let (start, end) = if Some(i) == self.plus_index {
+                // The indefinite-length segment: runs from its stored start offset
+                // to just before the post-`+` fixed region.
+                (self.offsets[i] as usize, self.bases.len() - self.post_plus_len)
+            } else {
+                let off = self.offsets[i];
+                let start =
+                    if off >= 0 { off as usize } else { self.bases.len() - ((-off) as usize) };
+                // Non-`+` segments always have a fixed length.
+                let len = seg.length.expect("non-`+` segment must have a length");
+                (start, start + len)
+            };
+            return Some((seg, &self.bases[start..end], &self.quals[start..end]));
+        }
+        None
     }
 }
 
@@ -199,7 +316,6 @@ impl std::str::FromStr for ReadStructure {
 
     /// Returns a new read structure from a string, or `Err` if parsing failed.
     fn from_str(rs: &str) -> Result<Self, Self::Err> {
-        let mut offset = 0;
         let mut i = 0;
         let mut segs: Vec<ReadSegment> = Vec::new();
         let chars: Vec<char> = rs.to_uppercase().chars().filter(|c| !c.is_whitespace()).collect();
@@ -238,14 +354,7 @@ impl std::str::FromStr for ReadStructure {
                     )));
                 }
                 i += 1;
-                segs.push(ReadSegment {
-                    offset,
-                    length,
-                    kind,
-                    #[cfg(feature = "non-terminal-plus")]
-                    extractable: true,
-                });
-                offset += length.unwrap_or(0);
+                segs.push(ReadSegment { length, kind });
             } else {
                 return Err(ReadStructureError::ReadStructureHadUnknownType(
                     ErrorMessageParts::new(&chars, parse_i, i + 1),
@@ -267,7 +376,9 @@ impl TryFrom<&[ReadSegment]> for ReadStructure {
 
 #[cfg(test)]
 mod test {
+    use crate::ReadStructureError;
     use crate::read_structure::ReadStructure;
+    use crate::segment_type::SegmentType;
     use std::str::FromStr;
 
     #[test]
@@ -305,18 +416,11 @@ mod test {
     }
 
     test_read_structure_from_str_err! {
-        test_read_structure_allow_any_char_only_once_and_for_last_segment_panic_0: "++M",
-        test_read_structure_allow_any_char_only_once_and_for_last_segment_panic_1: "5M++T",
-        test_read_structure_allow_any_char_only_once_and_for_last_segment_panic_2: "5M70+T",
-        test_read_structure_allow_any_char_only_once_and_for_last_segment_panic_3: "+M+T",
-    }
-
-    // With the `non-terminal-plus` feature enabled, this is a legal read structure.
-    // Tested for acceptance in the feature-gated test module below.
-    #[test]
-    #[cfg(not(feature = "non-terminal-plus"))]
-    fn test_read_structure_strict_rejects_non_terminal_plus() {
-        assert!(ReadStructure::from_str("+M70T").is_err());
+        test_read_structure_rejects_multiple_plus_0: "++M",
+        test_read_structure_rejects_multiple_plus_1: "5M++T",
+        test_read_structure_rejects_multiple_plus_2: "5M70+T",
+        test_read_structure_rejects_multiple_plus_3: "+M+T",
+        test_read_structure_rejects_multiple_plus_4: "5M+T+B",
     }
 
     macro_rules! test_read_structure_from_str_invalid {
@@ -384,31 +488,30 @@ mod test {
         $(
             #[test]
             fn $name() {
-                let (string, index, exp_string, exp_offset) = $value;
+                let (string, index, exp_string) = $value;
                 let read_structure = ReadStructure::from_str(string).unwrap();
                 let read_segment = read_structure[index];
                 assert_eq!(read_segment.to_string(), exp_string);
-                assert_eq!(read_segment.offset, exp_offset);
             }
         )*
         }
     }
 
     test_read_structure_index! {
-        test_read_structure_index_0: ("1T", 0, "1T", 0),
-        test_read_structure_index_1: ("1B", 0, "1B", 0),
-        test_read_structure_index_2: ("1M", 0, "1M", 0),
-        test_read_structure_index_3: ("1S", 0, "1S", 0),
-        test_read_structure_index_4: ("101T", 0, "101T", 0),
-        test_read_structure_index_5: ("5B101T", 0, "5B", 0),
-        test_read_structure_index_6: ("5B101T", 1, "101T", 5),
-        test_read_structure_index_7: ("123456789T", 0, "123456789T", 0),
-        test_read_structure_index_8: ("10T10B10B10S10M", 0, "10T", 0),
-        test_read_structure_index_9: ("10T10B10B10S10M", 1, "10B", 10),
-        test_read_structure_index_10: ("10T10B10B10S10M", 2, "10B", 20),
-        test_read_structure_index_11: ("10T10B10B10S10M", 3, "10S", 30),
-        test_read_structure_index_12: ("10T10B10B10S10M", 4, "10M", 40),
-        test_read_structure_index_32: ("10T10B10B10S10C10M", 4, "10C", 40),
+        test_read_structure_index_0: ("1T", 0, "1T"),
+        test_read_structure_index_1: ("1B", 0, "1B"),
+        test_read_structure_index_2: ("1M", 0, "1M"),
+        test_read_structure_index_3: ("1S", 0, "1S"),
+        test_read_structure_index_4: ("101T", 0, "101T"),
+        test_read_structure_index_5: ("5B101T", 0, "5B"),
+        test_read_structure_index_6: ("5B101T", 1, "101T"),
+        test_read_structure_index_7: ("123456789T", 0, "123456789T"),
+        test_read_structure_index_8: ("10T10B10B10S10M", 0, "10T"),
+        test_read_structure_index_9: ("10T10B10B10S10M", 1, "10B"),
+        test_read_structure_index_10: ("10T10B10B10S10M", 2, "10B"),
+        test_read_structure_index_11: ("10T10B10B10S10M", 3, "10S"),
+        test_read_structure_index_12: ("10T10B10B10S10M", 4, "10M"),
+        test_read_structure_index_32: ("10T10B10B10S10C10M", 4, "10C"),
     }
 
     #[test]
@@ -420,110 +523,187 @@ mod test {
         assert_eq!(rs, rs2);
     }
 
-    // ---- tests covering the `non-terminal-plus` feature ----
+    // ---- non-terminal `+` acceptance (parsing + round-trip) ----
 
-    #[cfg(feature = "non-terminal-plus")]
-    mod non_terminal_plus {
-        use crate::ReadStructureError;
-        use crate::read_structure::ReadStructure;
-        use std::str::FromStr;
+    #[test]
+    fn test_accepts_middle_plus() {
+        let rs = ReadStructure::from_str("8B+M10T").unwrap();
+        assert_eq!(rs.to_string(), "8B+M10T");
+        assert_eq!(rs.number_of_segments(), 3);
+    }
 
-        #[test]
-        fn test_accepts_middle_plus() {
-            let rs = ReadStructure::from_str("8B+M10T").unwrap();
-            assert_eq!(rs.to_string(), "8B+M10T");
-            assert_eq!(rs.number_of_segments(), 3);
+    #[test]
+    fn test_accepts_leading_plus() {
+        let rs = ReadStructure::from_str("+B10T").unwrap();
+        assert_eq!(rs.to_string(), "+B10T");
+        assert_eq!(rs.number_of_segments(), 2);
+    }
+
+    #[test]
+    fn test_accepts_middle_plus_between_fixed_runs() {
+        let rs = ReadStructure::from_str("10T8B+M10T").unwrap();
+        assert_eq!(rs.to_string(), "10T8B+M10T");
+        assert_eq!(rs.number_of_segments(), 4);
+    }
+
+    // ---- has_fixed_length / fixed_length ----
+
+    #[test]
+    fn test_has_fixed_length_strict() {
+        assert!(ReadStructure::from_str("10T8B").unwrap().has_fixed_length());
+        assert!(!ReadStructure::from_str("10T+M").unwrap().has_fixed_length());
+    }
+
+    #[test]
+    fn test_has_fixed_length_middle_plus() {
+        assert!(!ReadStructure::from_str("8B+M10T").unwrap().has_fixed_length());
+    }
+
+    #[test]
+    fn test_fixed_length_none_for_middle_plus() {
+        assert!(ReadStructure::from_str("8B+M10T").unwrap().fixed_length().is_none());
+    }
+
+    // ---- extraction via ReadStructure::extract ----
+
+    #[test]
+    fn test_extract_fixed_length() {
+        let rs = ReadStructure::from_str("10T8B").unwrap();
+        let bases = b"AAAAAAAAAAGGGGGGGG";
+        let quals = b"IIIIIIIIIIJJJJJJJJ";
+        let out: Vec<_> = rs.extract(bases, quals, true).unwrap().collect();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].0.kind, SegmentType::Template);
+        assert_eq!(out[0].1, b"AAAAAAAAAA");
+        assert_eq!(out[0].2, b"IIIIIIIIII");
+        assert_eq!(out[1].0.kind, SegmentType::SampleBarcode);
+        assert_eq!(out[1].1, b"GGGGGGGG");
+        assert_eq!(out[1].2, b"JJJJJJJJ");
+    }
+
+    #[test]
+    fn test_extract_trailing_plus() {
+        let rs = ReadStructure::from_str("10T+M").unwrap();
+        let bases = b"AAAAAAAAAAGGGGGGGGGG";
+        let quals = b"IIIIIIIIIIJJJJJJJJJJ";
+        let out: Vec<_> = rs.extract(bases, quals, true).unwrap().collect();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].1, b"AAAAAAAAAA");
+        assert_eq!(out[1].1, b"GGGGGGGGGG");
+        assert_eq!(out[1].2, b"JJJJJJJJJJ");
+    }
+
+    #[test]
+    fn test_extract_leading_plus() {
+        let rs = ReadStructure::from_str("+B10T").unwrap();
+        let bases = b"BBBBBTTTTTTTTTT";
+        let quals = b"!!!!!##########";
+        let out: Vec<_> = rs.extract(bases, quals, true).unwrap().collect();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].0.kind, SegmentType::SampleBarcode);
+        assert_eq!(out[0].1, b"BBBBB");
+        assert_eq!(out[0].2, b"!!!!!");
+        assert_eq!(out[1].0.kind, SegmentType::Template);
+        assert_eq!(out[1].1, b"TTTTTTTTTT");
+        assert_eq!(out[1].2, b"##########");
+    }
+
+    #[test]
+    fn test_extract_middle_plus() {
+        let rs = ReadStructure::from_str("8B+M10T").unwrap();
+        let bases = b"BBBBBBBBUUUUUUUUUUUUTTTTTTTTTT";
+        let quals = b"!!!!!!!!@@@@@@@@@@@@##########";
+        assert_eq!(bases.len(), 30);
+        let out: Vec<_> = rs.extract(bases, quals, true).unwrap().collect();
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].1, b"BBBBBBBB");
+        assert_eq!(out[0].2, b"!!!!!!!!");
+        assert_eq!(out[1].0.kind, SegmentType::MolecularBarcode);
+        assert_eq!(out[1].1, b"UUUUUUUUUUUU");
+        assert_eq!(out[1].2, b"@@@@@@@@@@@@");
+        assert_eq!(out[2].1, b"TTTTTTTTTT");
+        assert_eq!(out[2].2, b"##########");
+    }
+
+    #[test]
+    fn test_extract_multiple_pre_plus_and_post_plus() {
+        // Two pre-plus, one middle plus, one post-plus.
+        let rs = ReadStructure::from_str("10T8B+M10T").unwrap();
+        let bases = b"TTTTTTTTTTBBBBBBBBUUUUUUUUUUUUTTTTTTTTTT";
+        let quals = b"IIIIIIIIII!!!!!!!!@@@@@@@@@@@@##########";
+        assert_eq!(bases.len(), 40);
+        let out: Vec<_> = rs.extract(bases, quals, true).unwrap().collect();
+        assert_eq!(out.len(), 4);
+        assert_eq!(out[0].1, b"TTTTTTTTTT");
+        assert_eq!(out[1].1, b"BBBBBBBB");
+        assert_eq!(out[2].1, b"UUUUUUUUUUUU");
+        assert_eq!(out[3].1, b"TTTTTTTTTT");
+    }
+
+    #[test]
+    fn test_extract_include_skips_false_drops_skip() {
+        let rs = ReadStructure::from_str("8S+M10T").unwrap();
+        let bases = b"SSSSSSSSUUUUUUUUUUUUTTTTTTTTTT";
+        let quals = b"????????@@@@@@@@@@@@##########";
+        let out: Vec<_> = rs.extract(bases, quals, false).unwrap().collect();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].0.kind, SegmentType::MolecularBarcode);
+        assert_eq!(out[1].0.kind, SegmentType::Template);
+    }
+
+    #[test]
+    fn test_extract_include_skips_true_keeps_skip() {
+        let rs = ReadStructure::from_str("8S+M10T").unwrap();
+        let bases = b"SSSSSSSSUUUUUUUUUUUUTTTTTTTTTT";
+        let quals = b"????????@@@@@@@@@@@@##########";
+        let out: Vec<_> = rs.extract(bases, quals, true).unwrap().collect();
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].0.kind, SegmentType::Skip);
+        assert_eq!(out[0].1, b"SSSSSSSS");
+    }
+
+    #[test]
+    fn test_extract_errors_on_bases_quals_length_mismatch() {
+        let rs = ReadStructure::from_str("10T").unwrap();
+        let err = rs.extract(b"AAAAAAAAAA", b"III", true).unwrap_err();
+        assert!(matches!(err, ReadStructureError::MismatchingBasesAndQualsLen { .. }));
+    }
+
+    #[test]
+    fn test_extract_errors_when_read_too_short_for_fixed() {
+        let rs = ReadStructure::from_str("10T8B").unwrap();
+        let err = rs.extract(b"AAAA", b"IIII", true).unwrap_err();
+        match err {
+            ReadStructureError::ReadTooShort { read_len, required } => {
+                assert_eq!(read_len, 4);
+                assert_eq!(required, 18);
+            }
+            other => panic!("expected ReadTooShort, got {:?}", other),
         }
+    }
 
-        #[test]
-        fn test_accepts_leading_plus() {
-            let rs = ReadStructure::from_str("+B10T").unwrap();
-            assert_eq!(rs.to_string(), "+B10T");
-            assert_eq!(rs.number_of_segments(), 2);
+    #[test]
+    fn test_extract_errors_when_read_exactly_fixed_len_but_plus_present() {
+        // `+` requires at least one base, so read length must exceed fixed-length total.
+        let rs = ReadStructure::from_str("8B+M10T").unwrap();
+        let bases = vec![b'X'; 18]; // == length_of_fixed_segments
+        let quals = vec![b'#'; 18];
+        let err = rs.extract(&bases, &quals, true).unwrap_err();
+        match err {
+            ReadStructureError::ReadTooShort { read_len, required } => {
+                assert_eq!(read_len, 18);
+                assert_eq!(required, 19);
+            }
+            other => panic!("expected ReadTooShort, got {:?}", other),
         }
+    }
 
-        #[test]
-        fn test_accepts_trailing_plus() {
-            // Trailing `+` is still legal (it was before and it is now).
-            let rs = ReadStructure::from_str("10T+M").unwrap();
-            assert_eq!(rs.to_string(), "10T+M");
-        }
-
-        #[test]
-        fn test_accepts_middle_plus_between_fixed_runs() {
-            let rs = ReadStructure::from_str("10T8B+M10T").unwrap();
-            assert_eq!(rs.to_string(), "10T8B+M10T");
-            assert_eq!(rs.number_of_segments(), 4);
-        }
-
-        #[test]
-        fn test_rejects_two_consecutive_plus() {
-            assert!(ReadStructure::from_str("++M").is_err());
-        }
-
-        #[test]
-        fn test_rejects_two_separate_plus() {
-            assert!(ReadStructure::from_str("+M+T").is_err());
-        }
-
-        #[test]
-        fn test_rejects_two_plus_in_longer_structure() {
-            assert!(ReadStructure::from_str("5M+T+B").is_err());
-        }
-
-        #[test]
-        fn test_pre_plus_segments_still_extract() {
-            let rs = ReadStructure::from_str("8B+M10T").unwrap();
-            let read = b"BBBBBBBBUUUUUUUUUUUUTTTTTTTTTT";
-            assert_eq!(rs.segments()[0].extract_bases(read).unwrap(), b"BBBBBBBB");
-        }
-
-        #[test]
-        fn test_middle_plus_segment_not_extractable() {
-            let rs = ReadStructure::from_str("8B+M10T").unwrap();
-            let read = b"BBBBBBBBUUUUUUUUUUUUTTTTTTTTTT";
-            let err = rs.segments()[1].extract_bases(read).unwrap_err();
-            assert!(matches!(err, ReadStructureError::SegmentNotExtractable(_)));
-        }
-
-        #[test]
-        fn test_post_plus_segment_not_extractable() {
-            let rs = ReadStructure::from_str("8B+M10T").unwrap();
-            let read = b"BBBBBBBBUUUUUUUUUUUUTTTTTTTTTT";
-            let err = rs.segments()[2].extract_bases(read).unwrap_err();
-            assert!(matches!(err, ReadStructureError::SegmentNotExtractable(_)));
-        }
-
-        #[test]
-        fn test_extract_bases_and_quals_errors_on_post_plus() {
-            let rs = ReadStructure::from_str("8B+M10T").unwrap();
-            let bases = b"BBBBBBBBUUUUUUUUUUUUTTTTTTTTTT";
-            let quals = b"##########################????";
-            let err = rs.segments()[2].extract_bases_and_quals(bases, quals).unwrap_err();
-            assert!(matches!(err, ReadStructureError::SegmentNotExtractable(_)));
-        }
-
-        #[test]
-        fn test_trailing_plus_still_extractable() {
-            // Terminal `+` must remain extractable under the feature.
-            let rs = ReadStructure::from_str("10T+M").unwrap();
-            let read = b"AAAAAAAAAAGGGGGGGGGG";
-            assert_eq!(rs.segments()[1].extract_bases(read).unwrap(), b"GGGGGGGGGG");
-        }
-
-        #[test]
-        fn test_has_fixed_length_middle_plus() {
-            assert!(!ReadStructure::from_str("8B+M10T").unwrap().has_fixed_length());
-        }
-
-        #[test]
-        fn test_has_fixed_length_no_plus() {
-            assert!(ReadStructure::from_str("10T10B").unwrap().has_fixed_length());
-        }
-
-        #[test]
-        fn test_fixed_length_none_for_middle_plus() {
-            assert!(ReadStructure::from_str("8B+M10T").unwrap().fixed_length().is_none());
-        }
+    #[test]
+    fn test_extract_allows_read_exactly_fixed_len_when_no_plus() {
+        let rs = ReadStructure::from_str("10T8B").unwrap();
+        let bases = vec![b'X'; 18];
+        let quals = vec![b'#'; 18];
+        let out: Vec<_> = rs.extract(&bases, &quals, true).unwrap().collect();
+        assert_eq!(out.len(), 2);
     }
 }
