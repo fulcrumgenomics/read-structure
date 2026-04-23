@@ -21,25 +21,23 @@
 //! Extracting segments from an actual read based on the read structure:
 //!
 //! ```rust
-//! use std::convert::TryFrom;
 //! use std::str::FromStr;
-//! use read_structure::{
-//!     ReadStructure,
-//!     SegmentType,
-//! };
-//! let read_sequence = b"\
-//!     AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGGGGGGGGCCCCCCCCTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
-//! .to_vec();
-//! let kind_of_interest = SegmentType::Template;
+//! use read_structure::{ReadStructure, SegmentType, SkipHandling};
+//!
+//! let bases = b"\
+//!     AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGGGGGGGGCCCCCCCCTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT";
+//! let quals = &[b'I'; 168][..];
 //! let rs = ReadStructure::from_str("76T8B8B76T").unwrap();
 //!
-//! let mut sections = vec![];
-//! for segment in rs.segments_by_type(kind_of_interest) {
-//!     sections.push(segment.extract_bases(read_sequence.as_slice()).unwrap())
-//! }
-//! assert_eq!(sections, vec![
-//!     b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-//!     b"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+//! let templates: Vec<&[u8]> = rs.extract(bases, quals, SkipHandling::Exclude)
+//!     .unwrap()
+//!     .filter(|(seg, _, _)| seg.kind == SegmentType::Template)
+//!     .map(|(_, bases, _)| bases)
+//!     .collect();
+//!
+//! assert_eq!(templates, vec![
+//!     &b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"[..],
+//!     &b"TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"[..],
 //! ]);
 //! ```
 
@@ -78,14 +76,20 @@ pub enum ReadStructureError {
     #[error("Read structure contains zero elements")]
     ReadStructureContainsZeroElements,
 
-    #[error("Read structure contains a non-terminal segment that has an indefinite length: {0}")]
-    ReadStructureNonTerminalIndefiniteLengthReadSegment(ReadSegment),
+    #[error("Read structure contains more than one indefinite-length (`+`) segment: {0}")]
+    ReadStructureMultipleIndefiniteLengthSegments(ReadSegment),
 
-    #[error("Read ends before start of segment: {0}")]
-    ReadEndsBeforeSegment(ReadSegment),
+    /// The read is too short to accommodate every fixed-length segment in the read
+    /// structure. `required` is the sum of all fixed segment lengths, plus 1 if the
+    /// structure also has an indefinite (`+`) segment (which must be at least one base).
+    #[error("Read of length {read_len} is shorter than required minimum {required}")]
+    ReadTooShort { read_len: usize, required: usize },
 
-    #[error("Read ends before end of segment: {0}")]
-    ReadEndsAfterSegment(ReadSegment),
+    /// A fixed-length read structure was handed a read of the wrong length. Fixed
+    /// structures require exact-length reads; anything longer is almost always a
+    /// caller bug (wrong structure for this data, or a stray adapter still attached).
+    #[error("Read of length {read_len} does not match fixed structure length {expected}")]
+    ReadTooLong { read_len: usize, expected: usize },
 
     #[error("ReadSegment too short: {0}")]
     ReadSegmentTooShort(String),
