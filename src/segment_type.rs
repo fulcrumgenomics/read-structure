@@ -91,7 +91,7 @@ mod test {
     use std::convert::TryFrom;
     use std::str::FromStr;
 
-    use crate::{segment_type::SegmentType, ReadStructureError};
+    use crate::{ReadStructureError, segment_type::SegmentType};
     use strum::IntoEnumIterator;
 
     #[test]

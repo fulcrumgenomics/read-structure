@@ -5,12 +5,12 @@
 //! stretch of bases of the same type (e.g. template bases) of some length and
 //! some offset from the start of the read.
 
-use crate::read_segment;
-use crate::read_segment::ReadSegment;
-use crate::read_segment::ANY_LENGTH_BYTE;
-use crate::segment_type::SegmentType;
 use crate::ErrorMessageParts;
 use crate::ReadStructureError;
+use crate::read_segment;
+use crate::read_segment::ANY_LENGTH_BYTE;
+use crate::read_segment::ReadSegment;
+use crate::segment_type::SegmentType;
 use std::convert::TryFrom;
 use std::ops::Index;
 use std::string;
@@ -27,13 +27,6 @@ pub struct ReadStructure {
 }
 
 impl ReadStructure {
-    /// Builds a new [`ReadStructure`] from a vector of [`ReadSegment`]s.  The offsets
-    /// for the [`ReadSegment`]s are not updated.
-    // pub fn new(elements: Vec<ReadSegment>) -> Result<Self, ReadStructureError> {
-    //     let min_len = elements.iter().map(|elem| elem.length.unwrap_or(0)).sum();
-    //     Ok(ReadStructure { elements, length_of_fixed_segments: min_len })
-    // }
-
     /// Builds a new [`ReadStructure`] from a vector of [`ReadSegment`]s.
     ///
     /// # Errors
@@ -86,11 +79,7 @@ impl ReadStructure {
 
     /// Returns the fixed length if there is one.
     pub fn fixed_length(&self) -> Option<usize> {
-        if self.has_fixed_length() {
-            Some(self.length_of_fixed_segments)
-        } else {
-            None
-        }
+        if self.has_fixed_length() { Some(self.length_of_fixed_segments) } else { None }
     }
 
     /// Returns the number of segments in this read structure.
@@ -216,7 +205,7 @@ impl std::str::FromStr for ReadStructure {
                     ErrorMessageParts::new(&chars, parse_i, i),
                 ));
             } else if let Ok(kind) = SegmentType::try_from(chars[i]) {
-                if length.map_or(false, |l| l == 0) {
+                if length == Some(0) {
                     return Err(ReadStructureError::ReadSegmentLengthZero(ErrorMessageParts::new(
                         &chars, parse_i, i,
                     )));
@@ -272,7 +261,7 @@ mod test {
     }
 
     macro_rules! test_read_structure_from_str_err {
-        ($($name:ident: $value:expr,)*) => {
+        ($($name:ident: $value:expr_2021,)*) => {
         $(
             #[test]
             fn $name() {
@@ -291,7 +280,7 @@ mod test {
     }
 
     macro_rules! test_read_structure_from_str_invalid {
-        ($($name:ident: $value:expr,)*) => {
+        ($($name:ident: $value:expr_2021,)*) => {
         $(
             #[test]
             fn $name() {
@@ -327,7 +316,7 @@ mod test {
     }
 
     macro_rules! test_read_structure_length {
-        ($($name:ident: $value:expr,)*) => {
+        ($($name:ident: $value:expr_2021,)*) => {
         $(
             #[test]
             fn $name() {
@@ -351,7 +340,7 @@ mod test {
     }
 
     macro_rules! test_read_structure_index {
-        ($($name:ident: $value:expr,)*) => {
+        ($($name:ident: $value:expr_2021,)*) => {
         $(
             #[test]
             fn $name() {
