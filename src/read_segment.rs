@@ -22,7 +22,6 @@ pub const ANY_LENGTH_STR: &str = "+";
 /// segment's bases within a read are tracked by the enclosing [`ReadStructure`], not
 /// here.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReadSegment {
     /// The optional length of this segment. `None` means "the rest of the read" — the
     /// indefinite-length (`+`) segment. At most one segment per read structure may be

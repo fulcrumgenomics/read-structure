@@ -12,7 +12,18 @@ use crate::ReadStructureError;
 use crate::read_segment::ANY_LENGTH_BYTE;
 use crate::read_segment::ReadSegment;
 use crate::segment_type::SegmentType;
+use std::iter::FusedIterator;
 use std::ops::Index;
+
+/// Controls whether [`SegmentType::Skip`] segments are emitted by
+/// [`ReadStructure::extract`].
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+pub enum SkipHandling {
+    /// Emit every segment, including those of type [`SegmentType::Skip`].
+    Include,
+    /// Skip over [`SegmentType::Skip`] segments in the output iterator.
+    Exclude,
+}
 
 /// A read structure made up of one or more [`ReadSegment`]s.
 ///
@@ -22,6 +33,7 @@ use std::ops::Index;
 /// segments.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(into = "String", try_from = "String"))]
 pub struct ReadStructure {
     /// The elements that make up the [`ReadStructure`].
     elements: Vec<ReadSegment>,
@@ -124,8 +136,8 @@ impl ReadStructure {
     /// All error conditions are checked up front, so the returned iterator is infallible
     /// and can be cheaply `.collect()`ed into a `Vec` when an owned collection is needed.
     ///
-    /// When `include_skips` is `false`, segments of type [`SegmentType::Skip`] are
-    /// omitted from the output.
+    /// `skip_handling` controls whether [`SegmentType::Skip`] segments are emitted
+    /// ([`SkipHandling::Include`]) or silently dropped ([`SkipHandling::Exclude`]).
     ///
     /// # Errors
     ///
@@ -138,7 +150,7 @@ impl ReadStructure {
         &'rs self,
         bases: &'b [u8],
         quals: &'b [u8],
-        include_skips: bool,
+        skip_handling: SkipHandling,
     ) -> Result<ExtractedSegments<'rs, 'b>, ReadStructureError> {
         if bases.len() != quals.len() {
             return Err(ReadStructureError::MismatchingBasesAndQualsLen {
@@ -163,7 +175,7 @@ impl ReadStructure {
             post_plus_len: self.post_plus_len,
             bases,
             quals,
-            include_skips,
+            skip_handling,
             next_index: 0,
         })
     }
@@ -238,10 +250,10 @@ impl ReadStructure {
 /// Iterator returned by [`ReadStructure::extract`].
 ///
 /// Yields `(&ReadSegment, &[u8] bases, &[u8] quals)` triples — one per segment in
-/// the underlying read structure, in order (with `Skip` segments optionally filtered).
-/// The iterator is infallible: all error checks are performed up front in
-/// [`ReadStructure::extract`].
-#[derive(Debug)]
+/// the underlying read structure, in order (with `Skip` segments optionally filtered
+/// per [`SkipHandling`]). The iterator is infallible: all error checks are performed
+/// up front in [`ReadStructure::extract`].
+#[derive(Debug, Clone)]
 pub struct ExtractedSegments<'rs, 'b> {
     elements: &'rs [ReadSegment],
     offsets: &'rs [isize],
@@ -249,7 +261,7 @@ pub struct ExtractedSegments<'rs, 'b> {
     post_plus_len: usize,
     bases: &'b [u8],
     quals: &'b [u8],
-    include_skips: bool,
+    skip_handling: SkipHandling,
     next_index: usize,
 }
 
@@ -261,7 +273,7 @@ impl<'rs, 'b> Iterator for ExtractedSegments<'rs, 'b> {
             let i = self.next_index;
             self.next_index += 1;
             let seg = &self.elements[i];
-            if !self.include_skips && seg.kind == SegmentType::Skip {
+            if self.skip_handling == SkipHandling::Exclude && seg.kind == SegmentType::Skip {
                 continue;
             }
             let (start, end) = if Some(i) == self.plus_index {
@@ -281,6 +293,8 @@ impl<'rs, 'b> Iterator for ExtractedSegments<'rs, 'b> {
         None
     }
 }
+
+impl FusedIterator for ExtractedSegments<'_, '_> {}
 
 impl IntoIterator for ReadStructure {
     type Item = ReadSegment;
@@ -374,10 +388,25 @@ impl TryFrom<&[ReadSegment]> for ReadStructure {
     }
 }
 
+impl TryFrom<String> for ReadStructure {
+    type Error = ReadStructureError;
+    /// Parses a read structure from an owned string; equivalent to [`FromStr`].
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+impl From<ReadStructure> for String {
+    /// Renders the read structure to its canonical string form (e.g. `"8B+M10T"`).
+    fn from(rs: ReadStructure) -> Self {
+        rs.to_string()
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::ReadStructureError;
-    use crate::read_structure::ReadStructure;
+    use crate::read_structure::{ReadStructure, SkipHandling};
     use crate::segment_type::SegmentType;
     use std::str::FromStr;
 
@@ -399,7 +428,7 @@ mod test {
     }
 
     #[test]
-    fn test_read_structure_allow_anylength_char_only_once_and_for_last_segment() {
+    fn test_read_structure_accepts_plus_at_any_position_once() {
         assert_eq!(ReadStructure::from_str("5M+T").unwrap().to_string(), "5M+T");
         assert_eq!(ReadStructure::from_str("+M").unwrap().to_string(), "+M");
     }
@@ -523,6 +552,34 @@ mod test {
         assert_eq!(rs, rs2);
     }
 
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_serde_middle_plus_round_trip() {
+        let rs = ReadStructure::from_str("8B+M10T").unwrap();
+        let rs_json = serde_json::to_string(&rs).unwrap();
+        let rs2: ReadStructure = serde_json::from_str(&rs_json).unwrap();
+        assert_eq!(rs, rs2);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_serde_wire_format_is_canonical_string() {
+        // Pin the serialized form: a `ReadStructure` encodes as a single JSON
+        // string, not as an object with internal cached fields.
+        let rs = ReadStructure::from_str("8B+M10T").unwrap();
+        let rs_json = serde_json::to_string(&rs).unwrap();
+        assert_eq!(rs_json, "\"8B+M10T\"");
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_serde_rejects_invalid_string() {
+        let err = serde_json::from_str::<ReadStructure>("\"not a read structure\"").unwrap_err();
+        // Any deserialization error is acceptable here; just ensure it doesn't
+        // silently produce an inconsistent structure.
+        assert!(!err.to_string().is_empty());
+    }
+
     // ---- non-terminal `+` acceptance (parsing + round-trip) ----
 
     #[test]
@@ -571,7 +628,7 @@ mod test {
         let rs = ReadStructure::from_str("10T8B").unwrap();
         let bases = b"AAAAAAAAAAGGGGGGGG";
         let quals = b"IIIIIIIIIIJJJJJJJJ";
-        let out: Vec<_> = rs.extract(bases, quals, true).unwrap().collect();
+        let out: Vec<_> = rs.extract(bases, quals, SkipHandling::Include).unwrap().collect();
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].0.kind, SegmentType::Template);
         assert_eq!(out[0].1, b"AAAAAAAAAA");
@@ -586,7 +643,7 @@ mod test {
         let rs = ReadStructure::from_str("10T+M").unwrap();
         let bases = b"AAAAAAAAAAGGGGGGGGGG";
         let quals = b"IIIIIIIIIIJJJJJJJJJJ";
-        let out: Vec<_> = rs.extract(bases, quals, true).unwrap().collect();
+        let out: Vec<_> = rs.extract(bases, quals, SkipHandling::Include).unwrap().collect();
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].1, b"AAAAAAAAAA");
         assert_eq!(out[1].1, b"GGGGGGGGGG");
@@ -598,7 +655,7 @@ mod test {
         let rs = ReadStructure::from_str("+B10T").unwrap();
         let bases = b"BBBBBTTTTTTTTTT";
         let quals = b"!!!!!##########";
-        let out: Vec<_> = rs.extract(bases, quals, true).unwrap().collect();
+        let out: Vec<_> = rs.extract(bases, quals, SkipHandling::Include).unwrap().collect();
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].0.kind, SegmentType::SampleBarcode);
         assert_eq!(out[0].1, b"BBBBB");
@@ -614,7 +671,7 @@ mod test {
         let bases = b"BBBBBBBBUUUUUUUUUUUUTTTTTTTTTT";
         let quals = b"!!!!!!!!@@@@@@@@@@@@##########";
         assert_eq!(bases.len(), 30);
-        let out: Vec<_> = rs.extract(bases, quals, true).unwrap().collect();
+        let out: Vec<_> = rs.extract(bases, quals, SkipHandling::Include).unwrap().collect();
         assert_eq!(out.len(), 3);
         assert_eq!(out[0].1, b"BBBBBBBB");
         assert_eq!(out[0].2, b"!!!!!!!!");
@@ -632,7 +689,7 @@ mod test {
         let bases = b"TTTTTTTTTTBBBBBBBBUUUUUUUUUUUUTTTTTTTTTT";
         let quals = b"IIIIIIIIII!!!!!!!!@@@@@@@@@@@@##########";
         assert_eq!(bases.len(), 40);
-        let out: Vec<_> = rs.extract(bases, quals, true).unwrap().collect();
+        let out: Vec<_> = rs.extract(bases, quals, SkipHandling::Include).unwrap().collect();
         assert_eq!(out.len(), 4);
         assert_eq!(out[0].1, b"TTTTTTTTTT");
         assert_eq!(out[1].1, b"BBBBBBBB");
@@ -645,7 +702,7 @@ mod test {
         let rs = ReadStructure::from_str("8S+M10T").unwrap();
         let bases = b"SSSSSSSSUUUUUUUUUUUUTTTTTTTTTT";
         let quals = b"????????@@@@@@@@@@@@##########";
-        let out: Vec<_> = rs.extract(bases, quals, false).unwrap().collect();
+        let out: Vec<_> = rs.extract(bases, quals, SkipHandling::Exclude).unwrap().collect();
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].0.kind, SegmentType::MolecularBarcode);
         assert_eq!(out[1].0.kind, SegmentType::Template);
@@ -656,7 +713,7 @@ mod test {
         let rs = ReadStructure::from_str("8S+M10T").unwrap();
         let bases = b"SSSSSSSSUUUUUUUUUUUUTTTTTTTTTT";
         let quals = b"????????@@@@@@@@@@@@##########";
-        let out: Vec<_> = rs.extract(bases, quals, true).unwrap().collect();
+        let out: Vec<_> = rs.extract(bases, quals, SkipHandling::Include).unwrap().collect();
         assert_eq!(out.len(), 3);
         assert_eq!(out[0].0.kind, SegmentType::Skip);
         assert_eq!(out[0].1, b"SSSSSSSS");
@@ -665,14 +722,14 @@ mod test {
     #[test]
     fn test_extract_errors_on_bases_quals_length_mismatch() {
         let rs = ReadStructure::from_str("10T").unwrap();
-        let err = rs.extract(b"AAAAAAAAAA", b"III", true).unwrap_err();
+        let err = rs.extract(b"AAAAAAAAAA", b"III", SkipHandling::Include).unwrap_err();
         assert!(matches!(err, ReadStructureError::MismatchingBasesAndQualsLen { .. }));
     }
 
     #[test]
     fn test_extract_errors_when_read_too_short_for_fixed() {
         let rs = ReadStructure::from_str("10T8B").unwrap();
-        let err = rs.extract(b"AAAA", b"IIII", true).unwrap_err();
+        let err = rs.extract(b"AAAA", b"IIII", SkipHandling::Include).unwrap_err();
         match err {
             ReadStructureError::ReadTooShort { read_len, required } => {
                 assert_eq!(read_len, 4);
@@ -688,7 +745,7 @@ mod test {
         let rs = ReadStructure::from_str("8B+M10T").unwrap();
         let bases = vec![b'X'; 18]; // == length_of_fixed_segments
         let quals = vec![b'#'; 18];
-        let err = rs.extract(&bases, &quals, true).unwrap_err();
+        let err = rs.extract(&bases, &quals, SkipHandling::Include).unwrap_err();
         match err {
             ReadStructureError::ReadTooShort { read_len, required } => {
                 assert_eq!(read_len, 18);
@@ -703,7 +760,55 @@ mod test {
         let rs = ReadStructure::from_str("10T8B").unwrap();
         let bases = vec![b'X'; 18];
         let quals = vec![b'#'; 18];
-        let out: Vec<_> = rs.extract(&bases, &quals, true).unwrap().collect();
+        let out: Vec<_> = rs.extract(&bases, &quals, SkipHandling::Include).unwrap().collect();
         assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn test_extract_plus_only_structure() {
+        // Entire read is one indefinite-length template segment.
+        let rs = ReadStructure::from_str("+T").unwrap();
+        let bases = b"AAAAAAAAAA";
+        let quals = b"IIIIIIIIII";
+        let out: Vec<_> = rs.extract(bases, quals, SkipHandling::Include).unwrap().collect();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0.kind, SegmentType::Template);
+        assert_eq!(out[0].1, bases);
+        assert_eq!(out[0].2, quals);
+    }
+
+    #[test]
+    fn test_extract_plus_yields_one_base_at_minimum_length() {
+        // For `"8B+M10T"` the minimum read length is fixed + 1 = 19; at that length
+        // the `+M` segment must contain exactly one base.
+        let rs = ReadStructure::from_str("8B+M10T").unwrap();
+        let bases = b"BBBBBBBBMTTTTTTTTTT";
+        let quals = b"!!!!!!!!@##########";
+        assert_eq!(bases.len(), 19);
+        let out: Vec<_> = rs.extract(bases, quals, SkipHandling::Include).unwrap().collect();
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].1, b"BBBBBBBB");
+        assert_eq!(out[1].0.kind, SegmentType::MolecularBarcode);
+        assert_eq!(out[1].1, b"M");
+        assert_eq!(out[1].2, b"@");
+        assert_eq!(out[2].1, b"TTTTTTTTTT");
+    }
+
+    #[test]
+    fn test_extract_multiple_post_plus_segments() {
+        // Two fixed segments after the `+` exercise the backward offset pass.
+        let rs = ReadStructure::from_str("8B+M5T5S").unwrap();
+        let bases = b"BBBBBBBBUUUUUUUUUUUUTTTTTSSSSS";
+        let quals = b"!!!!!!!!@@@@@@@@@@@@#####?????";
+        assert_eq!(bases.len(), 30);
+        let out: Vec<_> = rs.extract(bases, quals, SkipHandling::Include).unwrap().collect();
+        assert_eq!(out.len(), 4);
+        assert_eq!(out[0].1, b"BBBBBBBB");
+        assert_eq!(out[1].0.kind, SegmentType::MolecularBarcode);
+        assert_eq!(out[1].1, b"UUUUUUUUUUUU");
+        assert_eq!(out[2].0.kind, SegmentType::Template);
+        assert_eq!(out[2].1, b"TTTTT");
+        assert_eq!(out[3].0.kind, SegmentType::Skip);
+        assert_eq!(out[3].1, b"SSSSS");
     }
 }

@@ -22,14 +22,14 @@
 //!
 //! ```rust
 //! use std::str::FromStr;
-//! use read_structure::{ReadStructure, SegmentType};
+//! use read_structure::{ReadStructure, SegmentType, SkipHandling};
 //!
 //! let bases = b"\
 //!     AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGGGGGGGGCCCCCCCCTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT";
 //! let quals = &[b'I'; 168][..];
 //! let rs = ReadStructure::from_str("76T8B8B76T").unwrap();
 //!
-//! let templates: Vec<&[u8]> = rs.extract(bases, quals, /* include_skips */ true)
+//! let templates: Vec<&[u8]> = rs.extract(bases, quals, SkipHandling::Exclude)
 //!     .unwrap()
 //!     .filter(|(seg, _, _)| seg.kind == SegmentType::Template)
 //!     .map(|(_, bases, _)| bases)
