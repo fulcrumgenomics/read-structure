@@ -87,7 +87,7 @@ impl ReadStructure {
         }
 
         if num_indefinite > 1 {
-            return Err(ReadStructureError::ReadStructureNonTerminalIndefiniteLengthReadSegment(
+            return Err(ReadStructureError::ReadStructureMultipleIndefiniteLengthSegments(
                 *segments.iter().find(|s| !s.has_length()).unwrap(),
             ));
         }
@@ -146,6 +146,10 @@ impl ReadStructure {
     ///   segment. When the structure also has a `+` segment, the read must be strictly
     ///   longer than the sum of the fixed-segment lengths (since `+` means at least
     ///   one base).
+    /// - [`ReadStructureError::ReadTooLong`] if the structure has no `+` segment and
+    ///   `bases.len()` does not exactly match `length_of_fixed_segments`. Silently
+    ///   truncating trailing bases is almost always a bug (wrong structure, stray
+    ///   adapter, etc.), so we require an exact match.
     pub fn extract<'rs, 'b>(
         &'rs self,
         bases: &'b [u8],
@@ -166,6 +170,12 @@ impl ReadStructure {
         };
         if bases.len() < required {
             return Err(ReadStructureError::ReadTooShort { read_len: bases.len(), required });
+        }
+        if self.plus_index.is_none() && bases.len() > self.length_of_fixed_segments {
+            return Err(ReadStructureError::ReadTooLong {
+                read_len: bases.len(),
+                expected: self.length_of_fixed_segments,
+            });
         }
 
         Ok(ExtractedSegments {
@@ -737,6 +747,35 @@ mod test {
             }
             other => panic!("expected ReadTooShort, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_extract_errors_when_read_too_long_for_fixed() {
+        // Fixed structures must get an exact-length read. Trailing bases are almost
+        // always a bug (wrong structure, stray adapter), not data to quietly drop.
+        let rs = ReadStructure::from_str("10T8B").unwrap();
+        let bases = vec![b'X'; 20]; // fixed length is 18
+        let quals = vec![b'#'; 20];
+        let err = rs.extract(&bases, &quals, SkipHandling::Include).unwrap_err();
+        match err {
+            ReadStructureError::ReadTooLong { read_len, expected } => {
+                assert_eq!(read_len, 20);
+                assert_eq!(expected, 18);
+            }
+            other => panic!("expected ReadTooLong, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_extract_allows_extra_bases_when_plus_present() {
+        // With a `+`, extra bases are by definition absorbed by the `+` segment.
+        let rs = ReadStructure::from_str("8B+M10T").unwrap();
+        let bases = b"BBBBBBBBUUUUUUUUUUUUUUUUUUUUUUUUTTTTTTTTTT";
+        let quals = b"!!!!!!!!@@@@@@@@@@@@@@@@@@@@@@@@##########";
+        assert_eq!(bases.len(), 42);
+        let out: Vec<_> = rs.extract(bases, quals, SkipHandling::Include).unwrap().collect();
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[1].1.len(), 24); // 42 - 8 - 10
     }
 
     #[test]

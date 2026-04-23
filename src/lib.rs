@@ -76,14 +76,20 @@ pub enum ReadStructureError {
     #[error("Read structure contains zero elements")]
     ReadStructureContainsZeroElements,
 
-    #[error("Read structure contains a non-terminal segment that has an indefinite length: {0}")]
-    ReadStructureNonTerminalIndefiniteLengthReadSegment(ReadSegment),
+    #[error("Read structure contains more than one indefinite-length (`+`) segment: {0}")]
+    ReadStructureMultipleIndefiniteLengthSegments(ReadSegment),
 
     /// The read is too short to accommodate every fixed-length segment in the read
     /// structure. `required` is the sum of all fixed segment lengths, plus 1 if the
     /// structure also has an indefinite (`+`) segment (which must be at least one base).
     #[error("Read of length {read_len} is shorter than required minimum {required}")]
     ReadTooShort { read_len: usize, required: usize },
+
+    /// A fixed-length read structure was handed a read of the wrong length. Fixed
+    /// structures require exact-length reads; anything longer is almost always a
+    /// caller bug (wrong structure for this data, or a stray adapter still attached).
+    #[error("Read of length {read_len} does not match fixed structure length {expected}")]
+    ReadTooLong { read_len: usize, expected: usize },
 
     #[error("ReadSegment too short: {0}")]
     ReadSegmentTooShort(String),

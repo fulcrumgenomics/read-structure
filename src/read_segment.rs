@@ -23,9 +23,12 @@ pub const ANY_LENGTH_STR: &str = "+";
 /// here.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct ReadSegment {
-    /// The optional length of this segment. `None` means "the rest of the read" — the
-    /// indefinite-length (`+`) segment. At most one segment per read structure may be
-    /// indefinite.
+    /// The optional length of this segment. `None` means this is the indefinite-length
+    /// (`+`) segment; its concrete span is resolved by the enclosing [`ReadStructure`]
+    /// at extract time (it runs from just after the preceding segments up to just
+    /// before the following segments, so in `8B+M10T` the `+M` segment covers
+    /// everything between byte 8 and `read_len - 10`). At most one segment per read
+    /// structure may be indefinite.
     pub length: Option<usize>,
     /// The segment type.
     pub kind: SegmentType,
