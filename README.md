@@ -11,9 +11,9 @@ Read structures is a library for working with strings that describe how the base
 <p>
 <a href="https://fulcrumgenomics.com">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset=".github/logos/fulcrumgenomics-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset=".github/logos/fulcrumgenomics-light.svg">
-  <img alt="Fulcrum Genomics" src=".github/logos/fulcrumgenomics-light.svg" height="100">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/fulcrumgenomics/read-structure/main/.github/logos/fulcrumgenomics-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/fulcrumgenomics/read-structure/main/.github/logos/fulcrumgenomics-light.svg">
+  <img alt="Fulcrum Genomics" src="https://raw.githubusercontent.com/fulcrumgenomics/read-structure/main/.github/logos/fulcrumgenomics-light.svg" height="100">
 </picture>
 </a>
 </p>
